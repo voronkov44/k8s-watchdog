@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watchdog
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: watchdog
+  template:
+    metadata:
+      labels:
+        app: watchdog
+    spec:
+      serviceAccountName: watchdog-sa
+      containers:
+        - name: watchdog
+          image: watchdog:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NAMESPACE
+              value: "default"
+            - name: PENDING_TIMEOUT
+              value: "5"       # минут
+            - name: CHECK_INTERVAL
+              value: "30"      # секунд
+            - name: LABEL_SELECTOR
+              value: ""        # например: app=my-service
+          # по желанию — probes, чтобы перезапускать watchdog при зависании
+          livenessProbe:
+            exec:
+              command: ["sh","-c","test -f /watchdog"]  # простая заглушка
+            initialDelaySeconds: 10
+            periodSeconds: 30
