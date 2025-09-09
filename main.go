@@ -79,7 +79,7 @@ func kubeConfig() *rest.Config {
 	if err == nil {
 		return cfg
 	}
-	// Фолбэк: локальный kubeconfig (~/.kube/config)
+	// Иначе — локальный kubeconfig (~/.kube/config)
 	kubeconfig := filepath.Join(homedir.HomeDir(), ".kube", "config")
 	cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
@@ -127,9 +127,10 @@ func checkPods(clientset *kubernetes.Clientset) {
 
 	now := time.Now()
 	for _, pod := range pods.Items {
-		should, reason := shouldRestartPod(&pod, pendingTimeout)
-		if should {
+		stuck, reason := isStuckInContainerCreating(&pod, pendingTimeout)
+		if stuck {
 			if firstSeen, ok := podProblemTimes[pod.Name]; !ok {
+				// первая фиксация проблемы — запоминаем время
 				podProblemTimes[pod.Name] = now
 				log.Printf("Problem detected: %s (%s) — starting timer", pod.Name, reason)
 			} else if now.Sub(firstSeen) >= pendingTimeout {
@@ -142,69 +143,44 @@ func checkPods(clientset *kubernetes.Clientset) {
 					Duration:  fmt.Sprintf("%.0f seconds", now.Sub(firstSeen).Seconds()),
 					Timestamp: now,
 				}
+				// Логирование
 				log.Printf("Problem pod details: %+v", ps)
 
-				if err := restartPod(ctx, clientset, pod.Namespace, pod.Name); err != nil {
-					log.Printf("restart error for pod %s: %v", pod.Name, err)
+				// Дергаем ручку(пока заглушка)
+				if err := notifyAPI(ctx, pod.Namespace, pod.Name, reason); err != nil {
+					log.Printf("notify error for pod %s: %v", pod.Name, err)
 				} else {
-					log.Printf("restart OK for pod %s", pod.Name)
+					log.Printf("notify OK for pod %s", pod.Name)
 				}
+				// сбрасываем таймер
 				delete(podProblemTimes, pod.Name)
 			}
 		} else {
+			// если починился — удаляем из карты
 			delete(podProblemTimes, pod.Name)
 		}
 	}
 }
 
-func shouldRestartPod(pod *corev1.Pod, timeout time.Duration) (bool, string) {
-	// Быстрые отказы по фазам
-	switch pod.Status.Phase {
-	case corev1.PodPending, corev1.PodRunning:
-		// ok, дальше смотри контейнеры
-	default:
-		// Succeeded/Failed/Unknown — на усмотрение. Обычно не трогаем.
-		return false, ""
-	}
-
-	reasonsToWatch := map[string]bool{
-		"ContainerCreating":          true,
-		"ErrImagePull":               true,
-		"ImagePullBackOff":           true,
-		"CrashLoopBackOff":           true,
-		"CreateContainerConfigError": true,
-	}
-
+func isStuckInContainerCreating(pod *corev1.Pod, timeout time.Duration) (bool, string) {
 	for _, cs := range pod.Status.ContainerStatuses {
-		// Waiting
-		if cs.State.Waiting != nil {
-			r := cs.State.Waiting.Reason
-			if reasonsToWatch[r] {
-				// «Сколько висим?» — от времени создания пода
-				if time.Since(pod.CreationTimestamp.Time) > timeout {
-					return true, r
-				}
-			}
-		}
-		// Running but not Ready долго — тоже подозрительно
-		if cs.State.Running != nil && !cs.Ready {
-			startedAt := cs.State.Running.StartedAt.Time
-			if time.Since(startedAt) > timeout {
-				return true, "RunningNotReady"
+		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "ContainerCreating" {
+			if time.Since(pod.CreationTimestamp.Time) > timeout {
+				return true, "ContainerCreating"
 			}
 		}
 	}
 	return false, ""
 }
 
-func restartPod(ctx context.Context, clientset *kubernetes.Clientset, ns, podName string) error {
-	// Самый простой и надёжный «рестарт» — удалить под.
-	// Если он под управлением контроллера (Deployment/RS/…),
-	// Kubernetes пересоздаст новый под.
-	grace := int64(0)
-	propagation := metav1.DeletePropagationForeground
-	return clientset.CoreV1().Pods(ns).Delete(ctx, podName, metav1.DeleteOptions{
-		GracePeriodSeconds: &grace,
-		PropagationPolicy:  &propagation,
-	})
+// notifyAPI — заглушка: здесь позже дергаем ваш внешний API.
+// Сейчас просто логируем и ждём ~200мс, имитируя сетевой вызов.
+func notifyAPI(ctx context.Context, ns, podName, reason string) error {
+	log.Printf("[MOCK] notify external API: namespace=%s pod=%s reason=%s", ns, podName, reason)
+	select {
+	case <-time.After(200 * time.Millisecond):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

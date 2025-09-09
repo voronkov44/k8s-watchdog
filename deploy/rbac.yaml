@@ -5,14 +5,14 @@ metadata:
   namespace: default
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: watchdog-role
   namespace: default
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["get","list","watch","delete"]
+    verbs: ["get","list","watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -24,6 +24,6 @@ subjects:
     name: watchdog-sa
     namespace: default
 roleRef:
-  kind: Role
+  kind: ClusterRole
   name: watchdog-role
   apiGroup: rbac.authorization.k8s.io
